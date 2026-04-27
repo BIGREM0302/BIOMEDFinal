@@ -1,4 +1,267 @@
-# 實驗三：腦機介面應用 - 分類器實作
+## GITHUB 指令
+
+---
+
+# 🚀 【三人 Git 協作標準流程】
+
+## 🧱 一、開發前（每個人第一次設定）
+
+### 1️⃣ clone 專案
+
+```bash
+git clone <repo-url>
+cd <repo-name>
+```
+
+---
+
+### 2️⃣ 初始化 uv 環境
+
+```bash
+uv venv
+uv sync
+```
+
+👉 這會：
+
+- 建立 `.venv`
+- 安裝 `uv.lock` 裡的所有套件
+
+---
+
+### 3️⃣ 建立自己的 branch（非常重要❗）
+
+每個人用自己的名字，例如：
+
+```bash
+git checkout -b feature/max
+git checkout -b feature/alice
+git checkout -b feature/bob
+```
+
+👉 命名建議：
+
+```
+feature/<名字或功能>
+bugfix/<功能>
+```
+
+---
+
+### 4️⃣ 推上 GitHub
+
+```bash
+git push -u origin feature/max
+```
+
+---
+
+# 🔧 二、開發中（每天都會用）
+
+## ⭐ 每次開始寫 code 前
+
+👉 **先同步 main（避免爆炸）**
+
+```bash
+git checkout main
+git pull origin main
+```
+
+再切回你的 branch：
+
+```bash
+git checkout feature/max
+git merge main
+```
+
+---
+
+## 💻 寫 code + commit
+
+```bash
+git add .
+git commit -m "feat: add login API"
+```
+
+---
+
+## 📤 push 到 GitHub
+
+```bash
+git push
+```
+
+---
+
+## 📦 有人新增套件時（很重要）
+
+如果 repo 有變：
+
+```bash
+git pull
+uv sync
+```
+
+👉 因為：
+
+- `pyproject.toml` 或 `uv.lock` 可能更新
+
+---
+
+# 🔀 三、開發後（準備合併）
+
+## 1️⃣ 再同步一次 main（避免衝突）
+
+```bash
+git checkout main
+git pull origin main
+
+git checkout feature/max
+git merge main
+```
+
+---
+
+## 2️⃣ 解 conflict（如果有）
+
+👉 修改衝突檔案後：
+
+```bash
+git add .
+git commit
+```
+
+---
+
+## 3️⃣ push branch
+
+```bash
+git push
+```
+
+---
+
+## 4️⃣ 開 Pull Request（PR）
+
+到 GitHub：
+
+👉 `feature/max → main`
+
+---
+
+## 5️⃣ 合併（通常由一人負責）
+
+Merge PR → main
+
+---
+
+# 🔄 四、合併後大家要做的事
+
+每個人都要：
+
+```bash
+git checkout main
+git pull origin main
+```
+
+然後：
+
+```bash
+uv sync
+```
+
+---
+
+# 🧹 五、清理 branch（可選）
+
+```bash
+git branch -d feature/max
+git push origin --delete feature/max
+```
+
+---
+
+# 📁 六、.gitignore 建議（uv 專案）
+
+```gitignore
+.venv/
+__pycache__/
+*.pyc
+.env
+```
+
+---
+
+# 📌 七、一定要 commit 的檔案
+
+```text
+✅ pyproject.toml
+✅ uv.lock   ← 超重要（鎖版本）
+❌ .venv/
+```
+
+---
+
+# ⚠️ 八、常見爆炸點（直接幫你們避雷）
+
+### ❌ 1. 直接在 main 開發
+
+👉 一定要 branch！
+
+---
+
+### ❌ 2. 忘記 pull 就寫
+
+👉 會 conflict 地獄
+
+---
+
+### ❌ 3. 沒 uv sync
+
+👉 套件錯版本 → 跑不起來
+
+---
+
+### ❌ 4. force push main
+
+👉 團隊直接爆掉 ☠️
+
+---
+
+# 🧠 九、簡化版流程（給懶人）
+
+每天：
+
+```bash
+git checkout main
+git pull
+
+git checkout feature/你的名字
+git merge main
+
+# 開發
+git add .
+git commit -m "xxx"
+git push
+```
+
+---
+
+# 🧩 十、如果你們想更專業（可選）
+
+可以加：
+
+- pre-commit（自動 lint）
+- CI/CD（GitHub Actions）
+- commit message 規範（feat/fix）
+
+---
+
+# 🧾 一句話總結
+
+👉 **每個人用自己的 branch → 常 pull main → 用 PR 合併 → uv sync 保持環境一致**
+
+---
 
 ## 1. 專案概述
 
@@ -7,6 +270,7 @@
 本學期使用 **BrainLink 腦波儀 (單通道 Fp1, 取樣率 512 Hz)**。每組需使用自行錄製的腦波資料來訓練模型。我們將使用 **MLP** 模型，並透過 **Leave-One-Subject-Out (LOSO)** 的方式來評估效能。
 
 👉 任務：
+
 - **不能更換模型類型**（必須維持使用 `MLPClassifier`）
 - 可以 **調整 MLP 的超參數** (隱藏層結構、學習率、正則化等)
 - 設計並實作合適的 **資料前處理 (Preprocessing) 與後處理 (Postprocessing)** 以提升分類準確率。
@@ -64,19 +328,19 @@ your_project_folder/
 
 ## 4. 可修改與不可修改的 HPs
 
-| 類別 | 參數 | 是否可調整 | 建議範圍與限制 |
-|------|------|------------|-----------------|
-| **模型結構** | `HIDDEN_LAYER_SIZES` | ✅ | 可自由設定，如 (128, 64, 32)、(256, 128) |
-| | `activation` | ❌ | 固定為 `relu` |
-| | `solver` | ❌ | 固定為 `adam` |
-| **訓練超參數** | `LEARNING_RATE_INIT` | ✅ | 0.005 ~ 0.02 |
-| | `ALPHA` (L2 正則化) | ✅ | 0.0001 ~ 0.05 |
-| | `BATCH_SIZE` | ✅ | 32 ~ 128 |
-| | `MAX_ITER` | ✅ | 50 ~ 200 |
-| **資料切片** | `SAMPLING_RATE` | ❌ | 固定為 512 |
-| | `SEGMENT_LENGTH` | ✅ | 2 ~ 6 秒 |
-| | `OVERLAP_RATIO` | ✅ | 0.0 ~ 0.8 |
-| **其他** | `early_stopping` | ❌ | 固定不開放 |
+| 類別           | 參數                 | 是否可調整 | 建議範圍與限制                           |
+| -------------- | -------------------- | ---------- | ---------------------------------------- |
+| **模型結構**   | `HIDDEN_LAYER_SIZES` | ✅         | 可自由設定，如 (128, 64, 32)、(256, 128) |
+|                | `activation`         | ❌         | 固定為 `relu`                            |
+|                | `solver`             | ❌         | 固定為 `adam`                            |
+| **訓練超參數** | `LEARNING_RATE_INIT` | ✅         | 0.005 ~ 0.02                             |
+|                | `ALPHA` (L2 正則化)  | ✅         | 0.0001 ~ 0.05                            |
+|                | `BATCH_SIZE`         | ✅         | 32 ~ 128                                 |
+|                | `MAX_ITER`           | ✅         | 50 ~ 200                                 |
+| **資料切片**   | `SAMPLING_RATE`      | ❌         | 固定為 512                               |
+|                | `SEGMENT_LENGTH`     | ✅         | 2 ~ 6 秒                                 |
+|                | `OVERLAP_RATIO`      | ✅         | 0.0 ~ 0.8                                |
+| **其他**       | `early_stopping`     | ❌         | 固定不開放                               |
 
 ## 5. 程式修改提示
 
@@ -126,7 +390,7 @@ Results saved to 'bci_results_raw_data.png'
 ## 7. 評分標準
 
 - **規範遵守 (20%)**：模型未被非法修改
-- **準確率   (40%)**：整體準確率達到 ≥65% 拿 30%，≥70% 拿 40%
+- **準確率 (40%)**：整體準確率達到 ≥65% 拿 30%，≥70% 拿 40%
 - **報告分析 (40%)**：詳細說明方法與比較結果
 
 ## 8. 繳交報告
