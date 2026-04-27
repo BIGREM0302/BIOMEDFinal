@@ -3,11 +3,14 @@ name = "bci-example-code-raw"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
+    "gymnasium>=1.2.3",
+    "kaggle-environments>=1.12.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.3",
     "pywavelets>=1.9.0",
     "scikit-learn>=1.8.0",
     "seaborn>=0.13.2",
+    "stable-baselines3>=2.8.0",
 ]
