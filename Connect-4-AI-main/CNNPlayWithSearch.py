@@ -23,6 +23,7 @@ from scipy.signal import convolve2d
 from multiprocessing import Pool
 from connect4 import Connect4
 import tensorflow as tf
+import pygame
 
 model = keras.models.load_model("monted")
 
@@ -131,12 +132,26 @@ def heuristics(state,colour):
 
         return 'hello'
 
-    def newFour(stateN,action):
+    def newFour(stateN, action):
         yel = np.count_nonzero(stateN == 1)
         red = np.count_nonzero(stateN == 2)
         
         xlim = 6
         ylim = 5
+
+        # ==========================================
+        # 💡 核心修改：修復 AI 後手的防禦盲區，打造鐵壁防守
+        # ==========================================
+        if colour == 1:
+            # 當 AI 是黃色 (先手)：
+            yellowConnect = 500 - yel      # 自己連線的價值 (進攻)
+            redConnect = -5000 + red       # 對手連線的威脅 (防守，絕對要擋！)
+        else:
+            # 當 AI 是紅色 (後手)：
+            # ⚠️ 注意：treeGen 呼叫時會將返回值乘上負號 (-newFour)
+            yellowConnect = 5000 - yel     # 乘負號後變 -5000 (對手威脅，絕對要擋！)
+            redConnect = -500 + red        # 乘負號後變 +500  (自己的進攻價值)
+        # ==========================================
 
         if stateN is not None:
             xc = action
@@ -350,25 +365,63 @@ boardY = 6
 done = False
 env.render()
 
-for i in range (0,10):
+print("==============================")
+print("歡迎來到 Connect 4 終極對決！")
+human_player = 1 # 預設人類為先手 (1:黃色)
 
+while True:
+    choice = input("請問你要當 先手(輸入 1) 還是 後手(輸入 2)？ ")
+    if choice in ['1', '2']:
+        human_player = int(choice)
+        print(f"設定完成！你將扮演 {'先手 (黃色)' if human_player == 1 else '後手 (紅色)'}。")
+        break
+    print("⚠️ 格式錯誤，請輸入 1 或 2！")
+print("==============================\n")
+
+for i in range (0, 10):
+    env.render()
     while not done:
-        # 判斷現在輪到誰
-        if env.getColour() == 1:
-            # 1 代表先手 (黃色)，現在換人類玩！
-            action = int(input('\n輪到你了 (先手)！請輸入落子位置 (0-6): '))
+        pygame.event.pump() # 防止視窗無回應
+
+        # 判斷現在是誰的回合
+        current_turn = env.getColour()
+
+        if current_turn == human_player:
+            # 🧑‍💻 人類的回合
+            while True:
+                try:
+                    action = int(input(f'\n輪到你了！請輸入落子位置 (0-6): '))
+                    if 0 <= action <= 6 and env.getState()[0][action] == 0:
+                        break
+                    print("⚠️ 該欄位已滿或輸入無效，請重新輸入！")
+                except ValueError:
+                    print("⚠️ 請輸入數字！")
         else:
-            # 2 代表後手 (紅色)，交給 AI 思考
-            print('\nAI 思考中...')
+            # 🤖 AI 的回合
+            ai_player = 2 if human_player == 1 else 1
+            print('\n🤖 AI 思考中...')
             start = time.process_time()
-            action = heuristics(env.getState(), 2)
-            print('AI 思考時間:', round(time.process_time() - start, 2), '秒')
+            action = heuristics(env.getState(), ai_player)
+            print(f'⏱️ AI 思考時間: {round(time.process_time() - start, 2)} 秒')
+            print(f"👉 AI 選擇落子於第 {action} 欄")
 
+        # 執行動作
         obs, rewards, done, info = env.step(action)
+        
+        print("\n目前盤面:")
+        print(obs)
 
+    # =============== 遊戲結束控制 ===============
+    print("\n==============================")
+    choice = input("遊戲結束！按 [Enter] 繼續下一局，或輸入 [q] 退出程式: ")
+    if choice.lower() == 'q':
+        pygame.quit()
+        print("感謝遊玩！")
+        break
+    
+    # 重置環境
     env.reset()
-    done=False
-
+    done = False
 
 
 

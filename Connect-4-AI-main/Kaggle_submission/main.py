@@ -149,12 +149,26 @@ def heuristics(state, colour):
         calculator(tree.leaves())
         return tree
 
-    def newFour(stateN,action):
+    def newFour(stateN, action):
         yel = np.count_nonzero(stateN == 1)
         red = np.count_nonzero(stateN == 2)
         
         xlim = 6
         ylim = 5
+
+        # ==========================================
+        # 💡 核心修改：修復 AI 後手的防禦盲區，打造鐵壁防守
+        # ==========================================
+        if colour == 1:
+            # 當 AI 是黃色 (先手)：
+            yellowConnect = 500 - yel      # 自己連線的價值 (進攻)
+            redConnect = -5000 + red       # 對手連線的威脅 (防守，絕對要擋！)
+        else:
+            # 當 AI 是紅色 (後手)：
+            # ⚠️ 注意：treeGen 呼叫時會將返回值乘上負號 (-newFour)
+            yellowConnect = 5000 - yel     # 乘負號後變 -5000 (對手威脅，絕對要擋！)
+            redConnect = -500 + red        # 乘負號後變 +500  (自己的進攻價值)
+        # ==========================================
 
         if stateN is not None:
             xc = action

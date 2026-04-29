@@ -236,20 +236,21 @@ class Connect4(Env):
                 if self.state[z][i] == 2:
                     pygame.draw.circle(self.screen,self.red,(50*ratio +100*i*ratio,50*ratio+ ratio*100*z),ratio*45)
 
+        # 覆蓋原本的 winCheck 與最後顯示邏輯
         self.winCheck()
         pygame.display.update()
+        
         if self.yellowWin:
-            text(self.screen, 'Comic Sans MS', 55, 300, 300, 'Yellow Wins!', (0, 255, 0))
-            print('yellowWin')
+            # 稍微調整座標，避免文字被切掉
+            text(self.screen, 'Comic Sans MS', 55, 200, 300, 'Yellow Wins!', (0, 255, 0))
             pygame.display.update()
-            time.sleep(5)
-            pygame.quit()
-        if self.redWin:
-            text(self.screen, 'Comic Sans MS', 45, 300, 300, 'Red Wins!', (0, 255, 0))
-            print('redWin')
+        elif self.redWin:
+            text(self.screen, 'Comic Sans MS', 55, 200, 300, 'Red Wins!', (0, 255, 0))
             pygame.display.update()
-            time.sleep(5)
-            pygame.quit()
+        # 額外加一個平手判定，體驗更好
+        elif 0 not in self.state:
+            text(self.screen, 'Comic Sans MS', 55, 200, 300, 'Draw!', (0, 255, 0))
+            pygame.display.update()
 
     def placer(self,action,colour):
         #Yellow

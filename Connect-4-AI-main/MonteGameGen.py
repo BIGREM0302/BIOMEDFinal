@@ -443,122 +443,127 @@ class Connect(Env):
 done = False
 env = Connect()
 
-# counter = 0 
+# =====================================================================
+# 💡 自動化資料管線 (資料夾收納版) 與 互動式選單
+# =====================================================================
+import csv
+import os
+import glob
+import pandas as pd
+from multiprocessing import Pool
+import numpy as np
 
+# 設定資料夾名稱
+DATA_DIR = "raw_data"
 
-#We generate the games here
+def f(x):
+    done = False
+    gameStates = []
+    env = Connect()
 
-# def f(x):
-#     done = False
-#     gameStates = []
-#     env = Connect()
+    while not done:
+        action = 2
+        obs, reward, done, info = env.step(action)
+        gameStates.append(obs.tolist())
 
-#     while not done:
-#         action = 2
-#         obs, reward, done, info = env.step(action)
-#         gameStates.append(obs.tolist())
+    # 確保資料夾存在，並把檔案存進去 (檔名格式: raw_data/1_0.csv)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    if reward == 0:
+        with open(f'{DATA_DIR}/{x}_0.csv', 'a', newline='') as myfile:
+            csv.writer(myfile, quoting=csv.QUOTE_ALL).writerow(gameStates)
+    elif reward == 1:
+        with open(f'{DATA_DIR}/{x}_1.csv', 'a', newline='') as myfile:
+            csv.writer(myfile, quoting=csv.QUOTE_ALL).writerow(gameStates)
+    elif reward == -1:
+        with open(f'{DATA_DIR}/{x}_neg1.csv', 'a', newline='') as myfile:
+            csv.writer(myfile, quoting=csv.QUOTE_ALL).writerow(gameStates)
+            
+    env.reset()
 
-#     if reward == 0:
-#         with open(str(x) + '0.csv', 'a', newline='') as myfile:
-#             wr = csv.writer(myfile, quoting=csv.QUOTE_ALL)
-#             wr.writerow(gameStates)
-#     if reward == 1:
-#         with open(str(x) + '1.csv', 'a', newline='') as myfile:
-#             wr = csv.writer(myfile, quoting=csv.QUOTE_ALL)
-#             wr.writerow(gameStates)
-#     if reward == -1:
-#         with open(str(x) + 'neg1.csv', 'a', newline='') as myfile:
-#             wr = csv.writer(myfile, quoting=csv.QUOTE_ALL)
-#             wr.writerow(gameStates)
-#     myfile.close()
-#     done = False
-#     env.reset()
+def process_csv_pattern(file_pattern):
+    # 自動抓取資料夾內符合規則的所有碎片檔案
+    files = glob.glob(file_pattern)
+    all_values = []
+    
+    for filename in files:
+        try:
+            df = pd.read_csv(filename, on_bad_lines='skip', names=[i for i in range(0, 43)])
+        except TypeError:
+            df = pd.read_csv(filename, error_bad_lines=False, names=[i for i in range(0, 43)])
+            
+        for column in df:
+            all_values += df[column].tolist()
+            
+    if not all_values:
+        return np.array([])
+    return pd.DataFrame(all_values).dropna().to_numpy()
 
-# if __name__ == '__main__':
-#     with Pool(8) as p:
-#         for i in range (0,10000):
-#                 p.map(f, [1,2,3,4,5,6,7,8])
+def merge_and_balance_data(target_samples=400000):
+    print(f"\n🧹 開始讀取並清理 [{DATA_DIR}] 資料夾內的所有 CSV 碎片檔案...")
+    
+    # 讀取資料夾內所有的勝、負、平手檔案
+    npd1 = process_csv_pattern(f'{DATA_DIR}/*_1.csv')
+    npd0 = process_csv_pattern(f'{DATA_DIR}/*_0.csv')
+    npn1 = process_csv_pattern(f'{DATA_DIR}/*_neg1.csv')
 
+    print(f"📊 目前收集的狀態數 -> 黃勝: {len(npd1)}, 平手: {len(npd0)}, 紅勝: {len(npn1)}")
+    
+    if len(npd1) == 0 or len(npd0) == 0 or len(npn1) == 0:
+        print("⚠️ 警告：某種結局的資料量為 0！請先生成更多對弈數據。")
+        return
 
-#COMBINE resulting files by hand, comment out code above, then do the following:
+    print("\n⚖️ 執行資料平衡 (強制 1:1:1 比例) 以強化 AI 後手防禦力...")
+    min_len = min(len(npd1), len(npd0), len(npn1))
+    sample_size = min(min_len, target_samples // 3)
 
+    npd1_sampled = npd1[np.random.choice(npd1.shape[0], sample_size, replace=False)]
+    npd0_sampled = npd0[np.random.choice(npd0.shape[0], sample_size, replace=False)]
+    npn1_sampled = npn1[np.random.choice(npn1.shape[0], sample_size, replace=False)]
 
-df = pd.read_csv('1.csv', error_bad_lines = False,names = [i for i in range(0, 43)])
+    trainingData = []
+    results = []
+    
+    for data in npd0_sampled:
+        trainingData.append(data[0])
+        results.append(0)
+    for data in npd1_sampled:
+        trainingData.append(data[0])
+        results.append(1)
+    for data in npn1_sampled:
+        trainingData.append(data[0])
+        results.append(-1)
 
-all_values = []
-for column in df:
-    this_column_values = df[column].tolist()
-    all_values += this_column_values
+    print("💾 正在打包並打亂最終教材...")
+    mainFrame = pd.concat([pd.DataFrame(trainingData, columns=['data']), 
+                           pd.DataFrame(results, columns=['res'])], axis=1)
+    
+    mainFrame = mainFrame.sample(frac=1).reset_index(drop=True)
+    # 最終產出的 final.csv 放在專案主目錄下供神經網路讀取
+    mainFrame.to_csv('final.csv', index=False)
+    print("✅ 完美！已成功產出平衡的 final.csv 教材！")
 
-one_column_df = pd.DataFrame(all_values)
-data1 = one_column_df.dropna()
-npd1 = data1.to_numpy()
-
-# ##
-
-df1 = pd.read_csv('0.csv', error_bad_lines = False, names = [i for i in range(0, 43)])
-
-all_values = []
-for column in df1:
-    this_column_values = df1[column].tolist()
-    all_values += this_column_values
-
-one_column_df1 = pd.DataFrame(all_values)
-data0 = one_column_df1.dropna()
-npd0 = data0.to_numpy()
-
-# ###
-df2 = pd.read_csv('neg1.csv', error_bad_lines = False, names = [i for i in range(0, 43)])
-
-all_values = []
-for column in df2:
-    this_column_values = df2[column].tolist()
-    all_values += this_column_values
-
-one_column_df2 = pd.DataFrame(all_values)
-dataNeg1 = one_column_df2.dropna()
-
-npn1 = dataNeg1.to_numpy()
-
-
-# ##
-
-def dataChooser():
-
-    #this is 0-2
-    dataChoice = (random.randint(0,2))
-
-    if dataChoice == 0:
-        return npd0[np.random.choice(npd0.shape[0],1)][0][0] , 0 
-    if dataChoice == 1:
-        return npd1[np.random.choice(npd1.shape[0],1)][0][0] , 1
-    if dataChoice == 2:
-        return npn1[np.random.choice(npn1.shape[0],1)][0][0], -1
-
-
-trainingData = []
-results = []
-
-# #We have generated 500,000 games
-# #I have sampled 4,000,000 positions which is actually much smaller (1/3rd of our data)
-# #Making this more could be good and wouldnt take too long.
-
-for i in range (0,4000000):
-
-    data,result = dataChooser()
-    trainingData.append(data)
-    results.append(result)
-    if i % 10000 == 0:
-        print (i)
-
-df = pd.DataFrame (trainingData, columns = ['data'])
-dfr = pd.DataFrame (results, columns = ['res'])
-
-conc = [df,dfr]
-mainFrame = pd.concat(conc, axis=1)
-
-print('saving')
-
-with open('final.csv','a') as f:
-    mainFrame.to_csv(f)
-
+if __name__ == '__main__':
+    print("=======================================")
+    print("🧠 AlphaZero 訓練資料管線中心")
+    print("=======================================")
+    print("1. 🎲 生成對弈數據 (存入 raw_data 資料夾)")
+    print("2. 🧹 清理並合併數據 (讀取 raw_data 並產出 final.csv)")
+    print("=======================================")
+    
+    choice = input("👉 請選擇要執行的步驟 (1 或 2): ")
+    
+    if choice == '1':
+        batches = int(input("請問要執行幾個 Batch (1 batch = 8 局，建議 1000 (原始work : 10000)): "))
+        print(f"\n🚀 開始平行運算生成 {batches * 8} 局遊戲...")
+        with Pool(8) as p:
+            for i in range(0, batches):
+                p.map(f, [1, 2, 3, 4, 5, 6, 7, 8])
+                if (i + 1) % 10 == 0:
+                    print(f"已完成 {(i + 1) * 8} 局...")
+        print("\n🎉 生成完畢！")
+        
+    elif choice == '2':
+        merge_and_balance_data()
+    else:
+        print("❌ 選擇無效，請重新執行程式。")
