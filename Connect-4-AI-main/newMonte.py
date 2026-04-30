@@ -198,7 +198,7 @@ def monte(gameState,depth):
         return 0.5
 
     def valueCalc(nVisitsChild,nScore,nVisitsParent):
-        bias = 2
+        bias = random.choice([1.4, 2.0, 3.0])
         #Search unexplored nodes over explored ones.
         if nVisitsChild == 0 or nVisitsParent == 0:
             answer = 100000

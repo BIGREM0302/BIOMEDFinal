@@ -39,7 +39,7 @@ def heuristics(state,colour):
         red = np.count_nonzero(stateTest == 2)
 
         # #Stops it from affecting the original array. 
-        testState = copy.deepcopy(stateTest)
+        testState = stateTest.copy()
         #Yellows turn 
         if yel == red:
             for i in range (boardY-1,-1,-1):
@@ -65,6 +65,8 @@ def heuristics(state,colour):
     #Everything already has an eval, and if the leaves eval doesnt change the parent, it stays the same. 
     #I just want the leaves of the tree to be evaled, and i want placeholder evals in the meantime.
     def treeGen(state):
+        search_start_time = time.time()
+        
         tree = Tree()
         tree.create_node(0,"00")
         counterL = 0
@@ -80,11 +82,17 @@ def heuristics(state,colour):
         #40000 other
         #StartL = counterL just makes sure youre actually generating information.
         #If youre not, it will break the while loop
-        while counterL < 14000:
+        MAX_NODES = 14000
+        while counterL < MAX_NODES:
+            if time.time() - search_start_time > 1.85:
+                break
+            
             startL = counterL
-            #First we generate tree
             for node in tree.leaves():
-                if int(node.tag) == 0: 
+                if time.time() - search_start_time > 1.85:
+                    break
+                    
+                if int(node.tag) == 0:
                     for i in legalCheck(node.data):
                         name = str(node.identifier) + str(i)
                         entry = placer(int(i),node.data)
@@ -101,34 +109,87 @@ def heuristics(state,colour):
         print('Generating tree time:', time.process_time() - start)
         #populate leaves
         start = time.process_time()
-        calculator(tree.leaves())
+        calculator(tree.leaves(), colour)
         print('Populating tree time:', time.process_time() - start)
         return tree
+    
+    def evaluate_tactics(state, ai_colour):
+        my_piece = ai_colour
+        opp_piece = 1 if ai_colour == 2 else 2
 
-    def calculator(stateList):
+        # 將棋盤轉為 0 和 1 的矩陣，方便做卷積運算
+        my_board = (state == my_piece).astype(int)
+        opp_board = (state == opp_piece).astype(int)
+
+        # 定義要掃描的戰術形狀 (橫向與兩個斜向，垂直 AI 已經很會擋了所以略過)
+        kernels = [
+            np.ones((1, 4)),       # 橫向掃描
+            np.eye(4),             # 右下斜向掃描
+            np.fliplr(np.eye(4))   # 左下斜向掃描
+        ]
+
+        tactical_score = 0.0
+        for k in kernels:
+            my_sum = convolve2d(my_board, k, mode='valid')
+            opp_sum = convolve2d(opp_board, k, mode='valid')
+
+            # 💡 我方聽牌 (有3顆且對手沒擋)：加分鼓勵 AI 自己佈置橫向陷阱
+            tactical_score += np.sum((my_sum == 3) & (opp_sum == 0)) * 0.3
+            
+            # 🚨 對手聽牌 (有3顆且我方沒擋)：大幅扣分逼迫 AI 提早防守！
+            tactical_score -= np.sum((opp_sum == 3) & (my_sum == 0)) * 0.8
+
+        return tactical_score
+
+    def calculator(stateList, colour): # 確保有傳入 colour，或確認它在外部變數範圍內
         dataList = []
         IDList = {}
         counter = 0
-        index=0
+        index = 0
+        
         for i in stateList:
             dataList.append(i.data)
             IDList[i.identifier] = index
-            counter +=1 
-            index+= 1
+            counter += 1 
+            index += 1
 
-        if counter > 1:
+        if counter > 0: # 稍微防呆一下，改成 > 0
             dataList = np.array(dataList)
-            dataList = dataList.reshape(counter,6,7)
+            dataList = dataList.reshape(counter, 6, 7)
             dataList = tf.expand_dims(dataList, axis=-1)
 
-            evalList = model.predict(dataList,steps=None,verbose=0,batch_size=20000).tolist()
+            # 一次把所有盤面丟給 CNN 算勝率
+            evalList = model.predict(dataList, steps=None, verbose=0, batch_size=20000).tolist()
+            
+            # ==========================================
+            # 🎯 戰略性位置加分表 (中央控制)
+            # ==========================================
+            position_bonus = [0.0, 0.02, 0.05, 0.1, 0.05, 0.02, 0.0] 
+            
             for z in stateList:
-                if int(z.tag) > -500 and int(z.tag) < 300:
+                if int(z.tag) > -50000 and int(z.tag) < 50000:
                     loc = IDList[z.identifier]
+                    
+                    try:
+                        action_col = int(str(z.identifier)[-1])
+                        bonus = position_bonus[action_col]
+                    except (ValueError, IndexError):
+                        bonus = 0 
+                    
                     if colour == 1:
-                        z.tag = evalList[loc][2] - evalList[loc][0]
-                    if colour == 2:
-                        z.tag = evalList[loc][0] - evalList[loc][2]
+                        cnn_score = evalList[loc][2] - evalList[loc][0]
+                    elif colour == 2:
+                        cnn_score = evalList[loc][0] - evalList[loc][2]
+                        
+                    # 🚀 加速關鍵：只有在局勢不明朗 (CNN 勝率介於 ±2 之間) 
+                    # 才啟動極度耗時的矩陣掃描器。如果勝率已經很明顯，就省下這個算力！
+                    if -2.0 < cnn_score < 2.0:
+                        tactics = evaluate_tactics(z.data, colour)
+                    else:
+                        tactics = 0.0
+
+                    # 最終評分 = 神經網路直覺 + 中央控制戰略 + 橫向戰術掃描
+                    z.tag = cnn_score + bonus + tactics
 
         return 'hello'
 
@@ -144,13 +205,13 @@ def heuristics(state,colour):
         # ==========================================
         if colour == 1:
             # 當 AI 是黃色 (先手)：
-            yellowConnect = 500 - yel      # 自己連線的價值 (進攻)
-            redConnect = -5000 + red       # 對手連線的威脅 (防守，絕對要擋！)
+            yellowConnect = 100000 - yel      # 自己連線的價值 (進攻)
+            redConnect = -100000 + red       # 對手連線的威脅 (防守，絕對要擋！)
         else:
             # 當 AI 是紅色 (後手)：
             # ⚠️ 注意：treeGen 呼叫時會將返回值乘上負號 (-newFour)
-            yellowConnect = 5000 - yel     # 乘負號後變 -5000 (對手威脅，絕對要擋！)
-            redConnect = -500 + red        # 乘負號後變 +500  (自己的進攻價值)
+            yellowConnect = 100000 - yel     # 乘負號後變 -100000 (對手威脅，絕對要擋！)
+            redConnect = -100000 + red        # 乘負號後變 +100000  (自己的進攻價值)
         # ==========================================
 
         if stateN is not None:
@@ -159,8 +220,7 @@ def heuristics(state,colour):
                 if stateN[i][action] != 0:
                     yc = i
                     break
-            yellowConnect = 500 - yel
-            redConnect = -1000 + red
+
 
             if  yel != red:
                 #3 on Right

@@ -63,7 +63,7 @@ class Connect(Env):
 
         if self.turn == True: 
             if  self.winTaker(self.possibilities(True)) == 9:
-                self.placer(monte(self.state,1000),True)
+                self.placer(monte(self.state,random.choice([500, 1000, 2000])),True)
                 self.turn = not self.turn
                 self.winCheck()
                 if self.yellowWin:
@@ -100,7 +100,7 @@ class Connect(Env):
         elif self.turn == False:
             #false makes it reds turn
             if self.winTaker(self.possibilities(False)) == 9:
-                self.placer(monte(self.state,1000),False)
+                self.placer(monte(self.state,random.choice([500, 1000, 2000])),False)
                 self.winCheck()
                 self.turn = not self.turn
 
@@ -460,6 +460,14 @@ def f(x):
     done = False
     gameStates = []
     env = Connect()
+
+    # --- 新增：隨機開局 1~3 步 ---
+    for _ in range(random.randint(1, 3)):
+        col = random.randint(0, 6)
+        env.placer(col, env.turn)
+        env.turn = not env.turn
+        gameStates.append(env.state.tolist())
+    # -----------------------------
 
     while not done:
         action = 2
