@@ -175,7 +175,15 @@ def heuristics(state, colour):
         for i in legalCheck(state):
             name = str(i)
             firstEntry = placer(int(i), state)
-            tree.create_node(newFour(firstEntry, int(i)), int("1" + name), parent="00", data=firstEntry)
+            
+            # 先取得最原始的分數
+            score = newFour(firstEntry, int(i))
+            
+            # 只要是後手 (2)，就必須加上負號，把 -100000 (紅勝) 翻轉成 +100000 吸引 AI 去下！
+            if colour == 2:
+                score = -score
+                
+            tree.create_node(score, int("1" + name), parent="00", data=firstEntry)
             
         # 💡 關鍵修改 3：為了避免 Kaggle 8秒超時被強制判負，必須降低搜尋節點數量
         # 原本是 14000，這裡先設為 800 保證安全。如果執行速度很快，你可以慢慢往上調。

@@ -66,7 +66,7 @@ def heuristics(state,colour):
     #I just want the leaves of the tree to be evaled, and i want placeholder evals in the meantime.
     def treeGen(state):
         search_start_time = time.time()
-        
+
         tree = Tree()
         tree.create_node(0,"00")
         counterL = 0
@@ -74,8 +74,16 @@ def heuristics(state,colour):
         #This creates 1 move futures
         for i in legalCheck(state):
             name = str(i)
-            firstEntry = placer(int(i),state)
-            tree.create_node(newFour(firstEntry,int(i)), int("1" + name), parent="00", data = firstEntry)
+            firstEntry = placer(int(i), state)
+            
+            # 先取得最原始的分數
+            score = newFour(firstEntry, int(i))
+            
+            # 只要是後手 (2)，就必須加上負號，把 -100000 (紅勝) 翻轉成 +100000 吸引 AI 去下！
+            if colour == 2:
+                score = -score
+                
+            tree.create_node(score, int("1" + name), parent="00", data=firstEntry)
         #Keeps going to deeper levels if it hasnt seen at least xyz positions.
         #It will go up by multiples of 7 at the start. 
         #14000 stable
