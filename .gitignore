@@ -1,6 +1,7 @@
 *.txt
 *.json
 *.zip
+runs/
 .venv/
 .vscode/*
 !.vscode/settings.json

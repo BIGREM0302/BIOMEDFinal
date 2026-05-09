@@ -17,10 +17,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 from tqdm import tqdm
+from datetime import datetime
+import json
 
 warnings.filterwarnings('ignore')
 
-execute_loso = False
+execute_loso = True
 load_checkpoint = True
 
 # ==========================================
@@ -30,13 +32,21 @@ class Config:
     DATASET_PATH = "bci_dataset_114-2_any"
     SAMPLING_RATE = 512
     WINDOW_SECONDS = 1.0       # 1秒視窗 (512 samples)
-    STEP_SECONDS = 0.25        # 滑動步長 0.25秒 (128 samples)
+
+    RUN_TAG = datetime.now().strftime("%Y%m%d_%H%M%S")
+    RUN_DIR = os.path.join("runs", RUN_TAG)
+    
+    # [問題1解法]: 設定不同的滑動步長來平衡資料
+    STEP_SECONDS_BG = 0.5      # Relax/Focus 的滑動步長調大為 0.5 秒 (減少樣本數)
     
     # 偽影拒絕門檻 (用於 Task 2 排除自然眨眼，保留純淨專注資料)
     ARTIFACT_THRES = 600
     
     # Task 3 刻意眨眼的時間點 (秒)
     BLINK_TIMESTAMPS = [0, 4, 8, 12, 16]
+    # [問題1解法]: 眨眼資料擴增 (Data Augmentation) 的時間偏移量 (秒)
+    # 在標記點附近擷取多個重疊的視窗，增加模型對眨眼位置的容錯率，並大幅提升樣本數
+    BLINK_SHIFTS = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
     
     # 模型與訓練參數
     BATCH_SIZE = 128
@@ -46,6 +56,24 @@ class Config:
     PATIENCE = 15              # Early Stopping 耐心值
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device:{DEVICE}")
+
+def save_config():
+    config_dict = {}
+
+    for k, v in Config.__dict__.items():
+        if not k.startswith("__") and not callable(v):
+            try:
+                json.dumps(v)
+                config_dict[k] = v
+            except TypeError:
+                config_dict[k] = str(v)
+
+    save_path = os.path.join(Config.RUN_DIR, "config.json")
+
+    with open(save_path, "w") as f:
+        json.dump(config_dict, f, indent=4)
+
+    print(f"Config saved to: {save_path}")
 
 # ==========================================
 # 2. 資料處理與特徵工程
@@ -62,7 +90,7 @@ def process_subject_files(folder_path):
     """處理單一受試者資料，執行精確切割與 Z-score 標準化"""
     X, y = [], []
     win_samples = int(Config.WINDOW_SECONDS * Config.SAMPLING_RATE)
-    step_samples = int(Config.STEP_SECONDS * Config.SAMPLING_RATE)
+    step_samples_bg = int(Config.STEP_SECONDS_BG * Config.SAMPLING_RATE)
     
     for task in [1, 2, 3]:
         files = glob.glob(os.path.join(folder_path, f"*_{task}_*.txt"))
@@ -80,27 +108,28 @@ def process_subject_files(folder_path):
             
             # 2. 依照任務類型進行切割與標註
             if task == 1: # Relax (標籤 0)
-                for start in range(0, len(data) - win_samples, step_samples):
+                for start in range(0, len(data) - win_samples, step_samples_bg):
                     segment = data[start:start + win_samples]
                     X.append(segment)
                     y.append(0)
                     
             elif task == 2: # Focus (標籤 1)
-                for start in range(0, len(data) - win_samples, step_samples):
+                for start in range(0, len(data) - win_samples, step_samples_bg):
                     segment = data[start:start + win_samples]
-                    # 拒絕振幅過大的區段，防止自然眨眼污染 Focus 類別
-                    #if np.max(np.abs(segment)) < Config.ARTIFACT_THRES:
                     X.append(segment)
                     y.append(1)
                         
             elif task == 3: # Blink (標籤 2)
                 for t in Config.BLINK_TIMESTAMPS:
-                    start = int(t * Config.SAMPLING_RATE)
-                    # 擷取眨眼發生當下及之後的波形
-                    if start + win_samples <= len(data):
-                        segment = data[start:start + win_samples]
-                        X.append(segment)
-                        y.append(2)
+                    center_sample = int(t * Config.SAMPLING_RATE)
+                    # [問題1解法]: 使用 BLINK_SHIFTS 進行資料擴增
+                    for shift in Config.BLINK_SHIFTS:
+                        start = center_sample + int(shift * Config.SAMPLING_RATE)
+                        # 確保索引不越界
+                        if start >= 0 and start + win_samples <= len(data):
+                            segment = data[start:start + win_samples]
+                            X.append(segment)
+                            y.append(2)
                         
     if not X: return None, None
     
@@ -132,7 +161,6 @@ def load_all_data():
 # 3. 輕量化神經網路架構 (1D-CNN + SE Attention)
 # ==========================================
 class SELayer(nn.Module):
-    """Squeeze-and-Excitation 注意力機制，自動強化重要特徵通道"""
     def __init__(self, channel, reduction=4):
         super(SELayer, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool1d(1)
@@ -180,48 +208,9 @@ class LightweightBCINet(nn.Module):
         return x
 
 # ==========================================
-# 6. 串流推論模擬器 (保留供未來實作參考)
-# ==========================================
-class StreamingPredictor:
-    """用於未來銜接即時資料流 (如藍牙傳輸) 的推論類別"""
-    def __init__(self, model_path, threshold=0.7, history_len=5):
-        self.model = LightweightBCINet().to(Config.DEVICE)
-        # self.model.load_state_dict(torch.load(model_path)) # 載入訓練好的權重
-        self.model.eval()
-        self.threshold = threshold
-        self.history = []
-        self.history_len = history_len
-        
-    def process_new_window(self, window_data):
-        """處理新送進來的 1 秒資料 (512 點)"""
-        # 1. 濾波與標準化
-        filtered = bandpass_filter(window_data)
-        normalized = (filtered - np.mean(filtered)) / (np.std(filtered) + 1e-8)
-        
-        # 2. 推論
-        tensor_data = torch.FloatTensor(normalized).unsqueeze(0).unsqueeze(0).to(Config.DEVICE)
-        with torch.no_grad():
-            outputs = self.model(tensor_data)
-            probs = F.softmax(outputs, dim=1).cpu().numpy()[0]
-            
-        pred_class = np.argmax(probs)
-        confidence = probs[pred_class]
-        
-        # 3. 平滑化機制 (多數決)
-        self.history.append(pred_class if confidence > self.threshold else -1)
-        if len(self.history) > self.history_len:
-            self.history.pop(0)
-            
-        valid_votes = [p for p in self.history if p != -1]
-        if not valid_votes: return -1 # 不確定狀態
-        
-        return max(set(valid_votes), key=valid_votes.count)
-
-# ==========================================
 # 4. 訓練與 LOSO 驗證流程
 # ==========================================
 def train_model(train_loader, val_X, val_y, class_weights):
-    """訓練單一折疊的模型，包含 Early Stopping 與 Loss 紀錄"""
     model = LightweightBCINet().to(Config.DEVICE)
     
     criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights).to(Config.DEVICE))
@@ -233,7 +222,7 @@ def train_model(train_loader, val_X, val_y, class_weights):
     best_acc = 0
     patience_counter = 0
     best_model_state = None
-    loss_curve = [] # 用來儲存這個 Subject 訓練時的 Loss
+    loss_curve = []
     
     for epoch in tqdm(range(Config.EPOCHS), desc="Training Epochs"):
         model.train()
@@ -250,10 +239,8 @@ def train_model(train_loader, val_X, val_y, class_weights):
             
             epoch_losses.append(loss.item())
             
-        # 紀錄平均 Loss
         loss_curve.append(np.mean(epoch_losses))
             
-        # Validation Phase
         model.eval()
         with torch.no_grad():
             val_outputs = model(val_X_tensor)
@@ -268,9 +255,8 @@ def train_model(train_loader, val_X, val_y, class_weights):
             patience_counter += 1
             
         if patience_counter >= Config.PATIENCE:
-            break # Early stopping
+            break
             
-    # 回傳最佳模型參數的預測結果以及整段訓練的 Loss 曲線
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
     model.eval()
@@ -289,7 +275,6 @@ def leave_one_subject_out_cv():
     subjects = sorted(list(dataset_dict.keys()))
     print(f"\n準備開始 LOSO 驗證，共 {len(subjects)} 位受試者...")
     
-    # 準備蒐集用於繪圖的結果包
     results = {
         'subject_names': [],
         'accuracies': [],
@@ -297,11 +282,9 @@ def leave_one_subject_out_cv():
         'loss_curves': []
     }
     
-    all_y_true = []
-    all_y_pred = []
+    all_y_true, all_y_pred = [], []
     
     for test_sub in subjects:
-        # 分離 Train / Test
         train_X_list, train_y_list = [], []
         test_X = dataset_dict[test_sub]['X']
         test_y = dataset_dict[test_sub]['y']
@@ -314,25 +297,20 @@ def leave_one_subject_out_cv():
         train_X = np.vstack(train_X_list)
         train_y = np.hstack(train_y_list)
         
-        # 計算動態類別權重
         classes = np.unique(train_y)
         weights = compute_class_weight(class_weight='balanced', classes=classes, y=train_y)
         
-        # 建立 DataLoader
         tensor_x = torch.FloatTensor(train_X)
         tensor_y = torch.LongTensor(train_y)
         train_dataset = TensorDataset(tensor_x, tensor_y)
         train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
         
         print(f"\nTraining model with {test_sub} left out...")
-        # 訓練與預測 (現在會多回傳 loss_curve)
         y_pred, loss_curve = train_model(train_loader, test_X, test_y, weights)
         
-        # 計算該折的指標
         acc = accuracy_score(test_y, y_pred)
         cm = confusion_matrix(test_y, y_pred, labels=[0, 1, 2])
         
-        # 紀錄結果以供繪圖
         results['subject_names'].append(test_sub)
         results['accuracies'].append(acc)
         results['confusion_matrices'].append(cm)
@@ -361,7 +339,6 @@ def plot_and_evaluate(y_true, y_pred, results):
     
     target_names = ['Relax', 'Focus', 'Blink']
     
-    # 逐類別列印精準度與召回率
     precision = precision_score(y_true, y_pred, average=None, labels=[0, 1, 2])
     recall = recall_score(y_true, y_pred, average=None, labels=[0, 1, 2])
     
@@ -370,11 +347,9 @@ def plot_and_evaluate(y_true, y_pred, results):
         print(f"  - Accuracy (Recall): {recall[i]:.4f}")
         print(f"  - Precision:         {precision[i]:.4f}\n")
         
-    # --- 繪製三合一分析圖表 ---
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     fig.suptitle('BCI Classifier (1D-CNN+SE) - Group LOSO Results', fontsize=16)
     
-    # 1. Accuracy distribution
     subject_names = results['subject_names']
     axes[0].bar(subject_names, results['accuracies'], 
                 color=['green' if acc >= 0.7 else 'orange' if acc >= 0.65 else 'red' for acc in results['accuracies']])
@@ -385,10 +360,8 @@ def plot_and_evaluate(y_true, y_pred, results):
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     axes[0].set_ylim(0, 1)
-    # 傾斜 x 軸標籤以防重疊
     axes[0].tick_params(axis='x', rotation=45) 
     
-    # 2. Overall confusion matrix
     total_cm = np.sum(results['confusion_matrices'], axis=0)
     sns.heatmap(total_cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=['Relax', 'Focus', 'Blink'], yticklabels=['Relax', 'Focus', 'Blink'], ax=axes[1])
@@ -396,26 +369,26 @@ def plot_and_evaluate(y_true, y_pred, results):
     axes[1].set_xlabel('Predicted Label')
     axes[1].set_ylabel('Actual Label')
     
-    # 3. Training loss curves
     valid_loss_curves = [lc for lc in results['loss_curves'] if len(lc) > 0]
     if valid_loss_curves:
         for i, loss_curve in enumerate(valid_loss_curves):
             axes[2].plot(loss_curve, alpha=0.7, label=subject_names[i])
         axes[2].set_title('Training Loss Curves')
-        axes[2].set_xlabel('Epoch')  # 這裡因為是每個 Epoch 紀錄一次，標籤改為 Epoch
+        axes[2].set_xlabel('Epoch') 
         axes[2].set_ylabel('Loss')
-        # 如果受試者太多，圖例可能會擋住畫面。限制受試者少於 15 人時才顯示圖例
         if len(subject_names) <= 15:
             axes[2].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         axes[2].grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('dl_bci_results_dashboard.png', dpi=300, bbox_inches='tight')
-    print("Dashboard saved as 'dl_bci_results_dashboard.png'")
+    save_path = os.path.join(Config.RUN_DIR, "dl_bci_results_dashboard.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    #plt.savefig(f"dl_bci_results_dashboard.png", dpi=300, bbox_inches='tight')
+    #print("Dashboard saved as 'dl_bci_results_dashboard.png'")
+    print(f"Dashboard saved as '{save_path}'")
     plt.show()
 
 def train_and_save_final_model():
-    """使用所有資料訓練最終佈署模型並儲存"""
     dataset_dict = load_all_data()
     if not dataset_dict:
         print("未找到資料，無法訓練最終模型。")
@@ -423,7 +396,6 @@ def train_and_save_final_model():
         
     print("\n準備訓練最終佈署模型 (使用全部資料)...")
     
-    # 組合所有受試者資料
     X_all_list, y_all_list = [], []
     for sub in dataset_dict:
         X_all_list.append(dataset_dict[sub]['X'])
@@ -432,22 +404,18 @@ def train_and_save_final_model():
     train_X = np.vstack(X_all_list)
     train_y = np.hstack(y_all_list)
     
-    # 計算類別權重
     classes = np.unique(train_y)
     weights = compute_class_weight(class_weight='balanced', classes=classes, y=train_y)
     
-    # 建立 DataLoader
     tensor_x = torch.FloatTensor(train_X)
     tensor_y = torch.LongTensor(train_y)
     train_dataset = TensorDataset(tensor_x, tensor_y)
     train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
     
-    # 初始化模型與優化器
     model = LightweightBCINet().to(Config.DEVICE)
     criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(weights).to(Config.DEVICE))
     optimizer = torch.optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY)
     
-    # 訓練模型 (無 Validation，直接跑完 EPOCHS)
     model.train()
     for epoch in tqdm(range(Config.EPOCHS), desc="Training Final Model"):
         for batch_X, batch_y in train_loader:
@@ -459,21 +427,20 @@ def train_and_save_final_model():
             loss.backward()
             optimizer.step()
             
-    # 儲存模型權重
-    save_path = "bci_model_final.pth"
+    #save_path = "bci_model_final.pth"
+    save_path = os.path.join(Config.RUN_DIR, "bci_model_final.pth")
     torch.save(model.state_dict(), save_path)
     print(f"\n✅ 最終模型已成功儲存至: {save_path}")
-    print("請將此檔案複製到 Windows 環境進行即時推論。")
 
 # ==========================================
 # 6. 主程式執行入口
 # ==========================================
 if __name__ == "__main__":
-    # 1. 執行原本的 LOSO 驗證 (評估模型架構效能)
+    save_config()
+    os.makedirs(Config.RUN_DIR, exist_ok=True)
     if execute_loso:
         y_true, y_pred, results = leave_one_subject_out_cv()
         if y_true is not None:
             plot_and_evaluate(y_true, y_pred, results)
     if load_checkpoint:        
-        # 2. 訓練並輸出要放到 Windows 上跑的最終模型
         train_and_save_final_model()
