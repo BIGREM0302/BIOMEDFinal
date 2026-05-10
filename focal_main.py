@@ -34,12 +34,12 @@ load_checkpoint = True
 class Config:
     DATASET_PATH = "bci_dataset_114-2_any"
     SAMPLING_RATE = 512
-    WINDOW_SECONDS = 1.0       # 1秒視窗 (512 samples)
+    WINDOW_SECONDS = 2.0       # 1秒視窗 (512 samples)
 
     RUN_TAG = datetime.now().strftime("%Y%m%d_%H%M%S")
-    RUN_DIR = os.path.join("runs", RUN_TAG)
+    RUN_DIR = os.path.join("runs_2", RUN_TAG)
     
-    STEP_SECONDS_BG = 0.5      # Relax/Focus 的滑動步長調大為 0.5 秒
+    STEP_SECONDS_BG = 1.0      # Relax/Focus 的滑動步長調大為 0.5 秒
     
     ARTIFACT_THRES = 600
     
@@ -48,10 +48,10 @@ class Config:
     
     # 模型與訓練參數
     BATCH_SIZE = 128
-    EPOCHS = 60
-    LEARNING_RATE = 3e-4
-    WEIGHT_DECAY = 1e-2        
-    PATIENCE = 25              
+    EPOCHS = 80
+    LEARNING_RATE = 1e-3
+    WEIGHT_DECAY = 1e-3        
+    PATIENCE = 20              
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def save_config():
@@ -178,9 +178,9 @@ def process_subject_files(folder_path):
     
     # 【修改 2】：正確的正規化邏輯 (保留 Segment 間的相對振幅大小)
     # 步驟 1: 各 Segment 扣除自身平均 (Zero-mean, 消除直流漂移)
-    #segment_means = np.mean(X_np, axis=1, keepdims=True)
-    #X_np = X_np - segment_means
-    X_np = X_np - np.mean(X_np)
+    segment_means = np.mean(X_np, axis=1, keepdims=True)
+    X_np = X_np - segment_means
+    #X_np = X_np - np.mean(X_np)
 
     # 步驟 2: 計算整個受試者資料的標準差 (全域尺度)，並縮放
     # 這樣振幅大的 Segment (如眨眼) 依然會比振幅小的 Segment 數值大
@@ -209,6 +209,21 @@ def load_all_data():
 # ==========================================
 # 3. 雙輸入神經網路架構 (CNN + 手工特徵融合)
 # ==========================================
+class FocalLoss(nn.Module):
+    def __init__(self, weight=None, gamma=2.0):
+        super(FocalLoss, self).__init__()
+        self.weight = weight
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        # 先計算原本的 Cross Entropy
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        # 計算預測正確的機率 pt
+        pt = torch.exp(-ce_loss)
+        # 套用 Focal Loss 公式
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
+
 class SELayer(nn.Module):
     def __init__(self, channel, reduction=4):
         super(SELayer, self).__init__()
@@ -245,6 +260,9 @@ class DualInputBCINet(nn.Module):
         
         self.dropout = nn.Dropout(0.5)
         
+        # 👇 新增這行：特徵融合後的批次正規化
+        self.bn_fusion = nn.BatchNorm1d(64 + num_manual_features)
+
         # 【修改 3】：特徵融合分類器
         # 64 (CNN 輸出) + 13 (時頻特徵輸出) = 77
         self.fc1 = nn.Linear(64 + num_manual_features, 32)
@@ -261,6 +279,9 @@ class DualInputBCINet(nn.Module):
         # 2. 特徵拼接 (Concat)
         x = torch.cat((x, x_feat), dim=1)
         
+        # 👇 新增這行：先做 BN 把 CNN 與手工特徵拉到同一尺度
+        x = self.bn_fusion(x)
+
         # 3. 輸出層
         x = self.dropout(x)
         x = F.relu(self.fc1(x))
@@ -273,7 +294,8 @@ class DualInputBCINet(nn.Module):
 def train_model(train_loader, val_X_raw, val_X_feat, val_y, class_weights):
     model = DualInputBCINet().to(Config.DEVICE)
     
-    criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights).to(Config.DEVICE))
+    #criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights).to(Config.DEVICE))
+    criterion = FocalLoss(weight=torch.FloatTensor(class_weights).to(Config.DEVICE), gamma=2.0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY)
     # add scheduler
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
@@ -495,7 +517,8 @@ def train_and_save_final_model():
     train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
     
     model = DualInputBCINet().to(Config.DEVICE)
-    criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(weights).to(Config.DEVICE))
+    #criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(weights).to(Config.DEVICE))
+    criterion = FocalLoss(weight=torch.FloatTensor(weights).to(Config.DEVICE), gamma=2.0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Config.EPOCHS, eta_min=1e-5)
 

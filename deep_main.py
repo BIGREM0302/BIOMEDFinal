@@ -34,12 +34,12 @@ load_checkpoint = True
 class Config:
     DATASET_PATH = "bci_dataset_114-2_any"
     SAMPLING_RATE = 512
-    WINDOW_SECONDS = 1.0       # 1秒視窗 (512 samples)
+    WINDOW_SECONDS = 2.0       # 1秒視窗 (512 samples)
 
     RUN_TAG = datetime.now().strftime("%Y%m%d_%H%M%S")
-    RUN_DIR = os.path.join("runs", RUN_TAG)
+    RUN_DIR = os.path.join("runs_3", RUN_TAG)
     
-    STEP_SECONDS_BG = 0.5      # Relax/Focus 的滑動步長調大為 0.5 秒
+    STEP_SECONDS_BG = 1.0      # Relax/Focus 的滑動步長調大為 0.5 秒
     
     ARTIFACT_THRES = 600
     
@@ -48,10 +48,10 @@ class Config:
     
     # 模型與訓練參數
     BATCH_SIZE = 128
-    EPOCHS = 60
-    LEARNING_RATE = 3e-4
-    WEIGHT_DECAY = 1e-2        
-    PATIENCE = 25              
+    EPOCHS = 80
+    LEARNING_RATE = 1e-3
+    WEIGHT_DECAY = 1e-3        
+    PATIENCE = 20              
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def save_config():
@@ -176,16 +176,11 @@ def process_subject_files(folder_path):
     
     X_np = np.array(X)
     
-    # 【修改 2】：正確的正規化邏輯 (保留 Segment 間的相對振幅大小)
-    # 步驟 1: 各 Segment 扣除自身平均 (Zero-mean, 消除直流漂移)
-    #segment_means = np.mean(X_np, axis=1, keepdims=True)
-    #X_np = X_np - segment_means
-    X_np = X_np - np.mean(X_np)
-
-    # 步驟 2: 計算整個受試者資料的標準差 (全域尺度)，並縮放
-    # 這樣振幅大的 Segment (如眨眼) 依然會比振幅小的 Segment 數值大
-    subject_std = np.std(X_np) + 1e-8
-    X_np = X_np / subject_std
+    subject_global_mean = np.mean(X_np)
+    subject_global_std = np.std(X_np) + 1e-8
+    
+    # 2. 全域 Z-Score
+    X_np = (X_np - subject_global_mean) / subject_global_std
     
     # 在變成 PyTorch Tensor 前，擷取專家特徵
     features = extract_features(X_np)
@@ -209,6 +204,21 @@ def load_all_data():
 # ==========================================
 # 3. 雙輸入神經網路架構 (CNN + 手工特徵融合)
 # ==========================================
+class FocalLoss(nn.Module):
+    def __init__(self, weight=None, gamma=2.0):
+        super(FocalLoss, self).__init__()
+        self.weight = weight
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        # 先計算原本的 Cross Entropy
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        # 計算預測正確的機率 pt
+        pt = torch.exp(-ce_loss)
+        # 套用 Focal Loss 公式
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
+
 class SELayer(nn.Module):
     def __init__(self, channel, reduction=4):
         super(SELayer, self).__init__()
@@ -228,44 +238,39 @@ class SELayer(nn.Module):
 class DualInputBCINet(nn.Module):
     def __init__(self, num_classes=3, num_manual_features=13):
         super(DualInputBCINet, self).__init__()
-        # CNN 分支 (處理 Raw Wave)
-        self.conv1 = nn.Conv1d(1, 16, kernel_size=32, stride=2, padding=16)
-        self.bn1 = nn.BatchNorm1d(16)
-        self.pool1 = nn.MaxPool1d(4)
-        self.se1 = SELayer(16)
         
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=8, stride=1, padding=4)
-        self.bn2 = nn.BatchNorm1d(32)
-        self.pool2 = nn.MaxPool1d(4)
-        self.se2 = SELayer(32)
+        # 👇 改為多路並行卷積
+        self.conv1_short = nn.Conv1d(1, 16, kernel_size=15, stride=1, padding=7)
+        self.conv1_long  = nn.Conv1d(1, 16, kernel_size=63, stride=1, padding=31)
         
-        self.conv3 = nn.Conv1d(32, 64, kernel_size=4, stride=1, padding=2)
-        self.bn3 = nn.BatchNorm1d(64)
-        self.pool3 = nn.AdaptiveAvgPool1d(1) 
+        self.bn1 = nn.BatchNorm1d(32) # 16+16=32
         
-        self.dropout = nn.Dropout(0.5)
+        # 後續層數稍微加深一點
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=15, stride=1, padding=7)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.pool = nn.AdaptiveAvgPool1d(1) # 改用全域平均池化，對抗位移雜訊
         
-        # 【修改 3】：特徵融合分類器
-        # 64 (CNN 輸出) + 13 (時頻特徵輸出) = 77
-        self.fc1 = nn.Linear(64 + num_manual_features, 32)
-        self.fc2 = nn.Linear(32, num_classes)
+        self.fc = nn.Sequential(
+            nn.Linear(64 + num_manual_features, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes)
+        )
 
     def forward(self, x_raw, x_feat):
-        # 1. 處理波形
-        x = self.pool1(F.relu(self.bn1(self.conv1(x_raw))))
-        x = self.se1(x)
-        x = self.pool2(F.relu(self.bn2(self.conv2(x))))
-        x = self.se2(x)
-        x = self.pool3(F.relu(self.bn3(self.conv3(x)))).squeeze(-1)
+        # 1. 多尺度卷積融合
+        x_s = F.relu(self.conv1_short(x_raw))
+        x_l = F.relu(self.conv1_long(x_raw))
+        x = torch.cat((x_s, x_l), dim=1)
+        x = self.bn1(x)
         
-        # 2. 特徵拼接 (Concat)
+        # 2. 第二層與池化
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.pool(x).squeeze(-1)
+        
+        # 3. 結合手工特徵
         x = torch.cat((x, x_feat), dim=1)
-        
-        # 3. 輸出層
-        x = self.dropout(x)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
+        return self.fc(x)
 
 # ==========================================
 # 4. 訓練與 LOSO 驗證流程
@@ -273,7 +278,12 @@ class DualInputBCINet(nn.Module):
 def train_model(train_loader, val_X_raw, val_X_feat, val_y, class_weights):
     model = DualInputBCINet().to(Config.DEVICE)
     
-    criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights).to(Config.DEVICE))
+    #criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weights).to(Config.DEVICE))
+    #criterion = FocalLoss(weight=torch.FloatTensor(class_weights).to(Config.DEVICE), gamma=2.0)
+    criterion = nn.CrossEntropyLoss(
+    weight=torch.FloatTensor(class_weights).to(Config.DEVICE),
+    label_smoothing=0.1  # 給予模型 10% 的容錯空間，減少過擬合
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY)
     # add scheduler
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
@@ -495,7 +505,12 @@ def train_and_save_final_model():
     train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
     
     model = DualInputBCINet().to(Config.DEVICE)
-    criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(weights).to(Config.DEVICE))
+    #criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(weights).to(Config.DEVICE))
+    #criterion = FocalLoss(weight=torch.FloatTensor(weights).to(Config.DEVICE), gamma=2.0)
+    criterion = nn.CrossEntropyLoss(
+        weight=torch.FloatTensor(weights).to(Config.DEVICE),
+        label_smoothing=0.1  # 給予模型 10% 的容錯空間，減少過擬合
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Config.EPOCHS, eta_min=1e-5)
 
