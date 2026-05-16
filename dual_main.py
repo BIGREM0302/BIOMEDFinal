@@ -34,7 +34,7 @@ load_checkpoint = True
 class Config:
     DATASET_PATH = "bci_dataset_114-2_any"
     SAMPLING_RATE = 512
-    WINDOW_SECONDS = 1.0       # 1秒視窗 (512 samples)
+    WINDOW_SECONDS = 2.0       # 1秒視窗 (512 samples)
 
     RUN_TAG = datetime.now().strftime("%Y%m%d_%H%M%S")
     RUN_DIR = os.path.join("runs", RUN_TAG)
@@ -45,7 +45,7 @@ class Config:
     
     BLINK_TIMESTAMPS = [0, 4, 8, 12, 16]
     BLINK_SHIFTS = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
-    
+
     # 模型與訓練參數
     BATCH_SIZE = 128
     EPOCHS = 60
@@ -149,6 +149,7 @@ def process_subject_files(folder_path):
                 continue 
                 
             if len(data) < 10240: 
+                print(f"Warn:{f}")
                 continue
                 
             data = bandpass_filter(data)
@@ -199,11 +200,12 @@ def load_all_data():
     
     for folder in subject_folders:
         sub_id = os.path.basename(folder)
-        X_raw, X_feat, y = process_subject_files(folder)
-        if X_raw is not None:
-            dataset_dict[sub_id] = {'X_raw': X_raw, 'X_feat': X_feat, 'y': y}
-            print(f"Loaded {sub_id}: {len(y)} segments (Relax: {np.sum(y==0)}, Focus: {np.sum(y==1)}, Blink: {np.sum(y==2)})")
-            
+        if sub_id not in ["S04", "S06", "S07", "S10", "S16"]:
+            X_raw, X_feat, y = process_subject_files(folder)
+            if X_raw is not None:
+                dataset_dict[sub_id] = {'X_raw': X_raw, 'X_feat': X_feat, 'y': y}
+                print(f"Loaded {sub_id}: {len(y)} segments (Relax: {np.sum(y==0)}, Focus: {np.sum(y==1)}, Blink: {np.sum(y==2)})")
+                
     return dataset_dict
 
 # ==========================================

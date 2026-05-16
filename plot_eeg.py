@@ -1,172 +1,248 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import sys
 from scipy import signal
 import os
+import glob
+import math
 
-SAMPLING_RATE = 512  # Hz
+def bandpass_filter(data, fs, low=0.1, high=45):
+    b, a = signal.butter(4, [low/(fs/2), high/(fs/2)], btype='band')
+    return signal.filtfilt(b, a, data)
 
-DATASET_PATH = "bci_dataset_114-2"
-VIS_PATH = "vis"
+def notch_filter(data, fs, freq=4):
+    b, a = signal.iirnotch(freq/(fs/2), Q=10)
+    return signal.filtfilt(b, a, data)
 
-class Config:
-    DATASET_PATH = "bci_dataset_114-2"
-    SKIP_SECONDS = 2.0                 # 捨棄每回合開頭前 2 秒
+def bandstop_filter(data, fs, low=3, high=5, order=4):
+    b, a = signal.butter(
+        order,
+        [low/(fs/2), high/(fs/2)],
+        btype='bandstop'
+    )
+    return signal.filtfilt(b, a, data)
+
+
+def plot_all_students_single_task(dataset_path, student_ids, task_id, round_id, start_sec, end_sec, fs=512):
     
-    # === 策略 A：針對連續狀態 (Relax / Focus) ===
-    RF_SEG_LEN = 4.0                   # 窗口大一點，頻譜解析度才高
-    RF_OVERLAP = 0.7                   # 重疊率高一點，資料量才多
-    # 【關鍵修改 1】嚴格過濾！真正的腦波不會超過 800，超過的都是肌肉或眼動雜訊，直接丟棄！
-    RF_MAX_THRES = 1500                 
-    
-    # === 策略 B：針對瞬間狀態 (Blink) ===
-    BLINK_SEG_LEN = 1.5                # 窗口縮小，聚焦眨眼瞬間，避免被背景稀釋
-    BLINK_OVERLAP = 0.0                # 重疊率 0，不重複計算同一個眨眼
-    BLINK_MIN_THRES = 500              # 必須有大於 500 的突波才承認是眨眼
-    
-    # MLP model parameters
-    HIDDEN_LAYERS = (64, 32)           
-    MAX_ITER = 200                     
-    LEARNING_RATE = 0.005              
-    ALPHA = 0.05                       # 提高正規化強度，防止模型死背特徵
-    ACTIVATION = 'relu'                
-    SOLVER = 'adam'                    
-    BATCH_SIZE = 128                   
-    EARLY_STOPPING = True              
-    VALIDATION_FRACTION = 0.1
-    N_ITER_NO_CHANGE = 15
-    SAMPLING_RATE = 512                
-    FEATURE_SELECTION = False
-    N_FEATURES_SELECT = 10             # 精簡為 10 個最強比例與複雜度特徵
-    RANDOM_STATE = 42
+    task_names = {1: "Relax", 2: "Focus", 3: "Blink"}
+    task_name = task_names.get(task_id, f"Task {task_id}")
 
-def build_path(student_id, task, idx):
-    filename = f"{student_id}_{task}_{idx}.txt"
-    full_path = os.path.join(DATASET_PATH, student_id, filename)
-    return full_path
+    start_idx = int(start_sec * fs)
+    end_idx = int(end_sec * fs)
 
-def load_data(filename):
-    data = []
-    with open(filename, 'r') as f:
-        for line in f:
-            val = line.strip()
-            if val:
-                try:
-                    data.append(float(val))
-                except ValueError:
-                    pass
-    return np.array(data)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    fig.suptitle(f"EEG Segment Comparison: {task_name} (Round {round_id})", fontsize=16)
 
-def plot_signal(data, file_name = "vis.png"):
-    n = len(data)
-    time = np.arange(n) / SAMPLING_RATE  # 秒
-
-    plt.figure(figsize=(12, 4))
-    plt.plot(time, data)
-    plt.title("EEG Signal")
-    plt.xlabel("Time (seconds)")
-    plt.ylabel("Amplitude")
-    plt.grid(True)
-    plt.tight_layout()
-    #plt.show()
-    plt.savefig(os.path.join(VIS_PATH, file_name))
-
-def create_segments(data, segment_length_samples, overlap_samples, task_type):
-    """根據不同任務類型，執行不同的切割與過濾策略"""
-    skip_samples = int(Config.SKIP_SECONDS * Config.SAMPLING_RATE)
-    if len(data) > skip_samples:
-        data = data[skip_samples:]
-    else:
-        return []
+    for student_id in student_ids:
+        pattern = os.path.join(dataset_path, student_id, f"*_{task_id}_{round_id}.txt")
+        files = glob.glob(pattern)
         
-    if len(data) < segment_length_samples:
-        return []
-    
-    segments = []
-    start = 0
-    step = segment_length_samples - overlap_samples
-    
-    nyq = 0.5 * Config.SAMPLING_RATE
-    low, high = 0.5 / nyq, 45.0 / nyq # normalize frequency, since max frequency = 1/2 * sample_rate
-    b, a = signal.butter(4, [low, high], btype='band') # order = 4
-    data_filetered = signal.filtfilt(b, a, data)
-    plot_signal(data_filetered, "raw_data_filtered")
-    while start + segment_length_samples <= len(data):
-        segment = data[start:start + segment_length_samples]
-        segment_filtered = signal.filtfilt(b, a, segment) # use filter
-        plot_signal(segment_filtered, f"seg_{start}_filt.png")
-        peak_amp = np.max(np.abs(segment_filtered)) 
-        print(peak_amp)
-        # === 核心邏輯：依照任務進行智能過濾 ===
-        if task_type == 1: # Relax
-            # 放寬 Relax 的標準，多收一點資料進來訓練
-            if peak_amp > 1500: 
-                print(f"seg_{start} peak amplitude violation for Task 1(Relax)")
-                start += step # just don't put this segment into []
-                continue 
-        elif task_type == 2: # Focus
-            if peak_amp > Config.RF_MAX_THRES:
-                print(f"seg_{start} peak amplitude violation for Task 2(Focus)")
-                start += step
-                continue
+        if files:
+            try:
+                raw_data = np.loadtxt(files[0])
+                # =============================================
+                # ==== adding filters  ====
+                # raw_data = bandpass_filter(raw_data, fs)
+                # raw_data = notch_filter(raw_data, fs)
+                # raw_data = bandstop_filter(raw_data, fs)
+                # =============================================
+                actual_end = min(end_idx, len(raw_data))
+                data_slice = raw_data[start_idx:actual_end]
+                time = np.arange(start_idx, actual_end) / fs
                 
-        elif task_type == 3:    # Blink
-            # 如果這個小視窗內沒有出現足夠大的突波，代表它切到了「沒眨眼」的空白期
-            if peak_amp < Config.BLINK_MIN_THRES:
-                print(f"seg_{start} peak amplitude too low for Task 3(Blink)")
-                start += step
-                continue # 沒有眨眼的片段直接丟棄，防止標籤污染
-        print(f"seg_{start} is included")
-        segments.append(segment_filtered)
-        start += step
-        
-    return segments
-
-
-def main():
-    rf_seg_len = int(Config.RF_SEG_LEN * Config.SAMPLING_RATE)
-    rf_overlap = int(rf_seg_len * Config.RF_OVERLAP)
-    blk_seg_len = int(Config.BLINK_SEG_LEN * Config.SAMPLING_RATE)
-    blk_overlap = int(blk_seg_len * Config.BLINK_OVERLAP)
-    # 情況 1：直接給完整路徑
-    if len(sys.argv) == 2:
-        filename = sys.argv[1]
-    
-    # 情況 2：給三個參數（學號 task idx）
-    elif len(sys.argv) == 4:
-        student_id = sys.argv[1]
-        task = sys.argv[2]
-        idx = sys.argv[3]
-        filename = build_path(student_id, task, idx)
-        print(f"自動組合路徑: {filename}")
-    
-    # 情況 3：互動輸入
-    else:
-        student_id = input("學號: ")
-        task = input("task (1=Relax, 2=Focus, 3=Blink): ")
-        idx = input("第幾個: ")
-        filename = build_path(student_id, task, idx)
-        print(f"自動組合路徑: {filename}")
-
-    if not os.path.exists(filename):
-        print("❌ 檔案不存在！")
-        return
-    
-    try:
-        data = load_data(filename)
-        print(f"Loaded {len(data)} samples ({len(data)/SAMPLING_RATE:.2f} seconds)")
-        plot_signal(data, "raw_data.png")
-        print("Task:", task)
-        task = int(task)
-        if task in [1, 2]:
-            print("Seg_len:", rf_seg_len)
-            print("Overlap_len", rf_overlap)
-            segs = create_segments(data, rf_seg_len, rf_overlap, task)
+                ax.plot(time, data_slice, lw=1.0, alpha=0.8, label=student_id)
+                
+            except Exception as e:
+                print(f"Error loading {student_id}: {e}")
         else:
-            segs = create_segments(data, blk_seg_len, blk_overlap, task)
+            print(f"File not found for: {student_id}")
+
+    ax.set_title(f"Time: {start_sec}s to {end_sec}s", fontsize=12)
+    ax.set_xlabel("Time (seconds)", fontsize=12)
+    ax.set_ylabel("Amplitude", fontsize=12)
+    ax.set_ylim(-1000, 1000) 
+    ax.grid(True, alpha=0.3)
+    
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0.)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_students_separate_subplots(dataset_path, student_ids, task_id, round_id, start_sec, end_sec, fs=512):
+    
+    task_names = {1: "Relax", 2: "Focus", 3: "Blink"}
+    task_name = task_names.get(task_id, f"Task {task_id}")
+
+    start_idx = int(start_sec * fs)
+    end_idx = int(end_sec * fs)
+
+    cols = 3
+    rows = math.ceil(len(student_ids) / cols)
+
+    fig, axes = plt.subplots(rows, cols, figsize=(12, 2 * rows), sharex=True, sharey=True)
+    fig.suptitle(f"EEG Segments: {task_name} (Round {round_id}) | {start_sec}s - {end_sec}s", fontsize=16)
+
+    axes_flat = axes.flatten()
+
+    for i, student_id in enumerate(student_ids):
+        ax = axes_flat[i]
+        pattern = os.path.join(dataset_path, student_id, f"*_{task_id}_{round_id}.txt")
+        files = glob.glob(pattern)
         
-    except FileNotFoundError:
-        print("檔案找不到！請確認路徑是否正確")
+        if files:
+            try:
+                raw_data = np.loadtxt(files[0])
+                # =============================================
+                # ==== adding filters =========================
+                # raw_data = bandpass_filter(raw_data, fs)
+                # raw_data = notch_filter(raw_data, fs)
+                # raw_data = bandstop_filter(raw_data, fs)
+                # =============================================
+                actual_end = min(end_idx, len(raw_data))
+                data_slice = raw_data[start_idx:actual_end]
+                time = np.arange(start_idx, actual_end) / fs
+                
+                ax.plot(time, data_slice, lw=0.8, color='#1f77b4')
+                ax.set_title(student_id, fontsize=11, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                
+            except Exception as e:
+                ax.text(0.5, 0.5, "Load Error", ha='center', va='center', fontsize=10, color='red')
+        else:
+            ax.text(0.5, 0.5, "File Not Found", ha='center', va='center', fontsize=10, color='gray')
+
+    for ax in axes_flat:
+        ax.set_ylim(-1000, 1000)
+
+    for j in range(len(student_ids), len(axes_flat)):
+        fig.delaxes(axes_flat[j])
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+
+def plot_single_subject_all_rounds(dataset_path, student_id, task_id, rounds, start_sec, end_sec, fs=512):
+    
+    task_names = {1: "Relax", 2: "Focus", 3: "Blink"}
+    task_name = task_names.get(task_id, f"Task {task_id}")
+
+    start_idx = int(start_sec * fs)
+    end_idx = int(end_sec * fs)
+
+    cols = 3
+    rows = math.ceil(len(rounds) / cols)
+
+    fig, axes = plt.subplots(rows, cols, figsize=(12, 2 * rows), sharex=True, sharey=True)
+    fig.suptitle(f"EEG Progression: {student_id} | {task_name} (All Rounds) | {start_sec}s - {end_sec}s", fontsize=16)
+
+    axes_flat = axes.flatten()
+
+    for i, round_id in enumerate(rounds):
+        ax = axes_flat[i]
+        pattern = os.path.join(dataset_path, student_id, f"*_{task_id}_{round_id}.txt")
+        files = glob.glob(pattern)
+        
+        if files:
+            try:
+                raw_data = np.loadtxt(files[0])
+                # =============================================
+                # ==== adding filters =========================
+                # raw_data = bandpass_filter(raw_data, fs)
+                # raw_data = notch_filter(raw_data, fs)
+                # raw_data = bandstop_filter(raw_data, fs)
+                # =============================================
+                actual_end = min(end_idx, len(raw_data))
+                data_slice = raw_data[start_idx:actual_end]
+                time = np.arange(start_idx, actual_end) / fs
+                
+                ax.plot(time, data_slice, lw=0.8, color='#2ca02c')
+                ax.set_title(f"Round {round_id}", fontsize=11, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                
+            except Exception as e:
+                ax.text(0.5, 0.5, "Load Error", ha='center', va='center', fontsize=10, color='red')
+        else:
+            ax.text(0.5, 0.5, "File Not Found", ha='center', va='center', fontsize=10, color='gray')
+
+    for ax in axes_flat:
+        ax.set_ylim(-1000, 1000)
+
+    for j in range(len(rounds), len(axes_flat)):
+        fig.delaxes(axes_flat[j])
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+
+def plot_task_fixed_y(dataset_path, student_id, rounds, start_sec, end_sec, fs=512):
+
+    tasks = [1, 2, 3]
+    # rounds = [17, 18, 19]
+    task_names = {1: "Relax", 2: "Focus", 3: "Blink"}
+
+    start_idx = int(start_sec * fs)
+    end_idx = int(end_sec * fs)
+
+    
+    fig, axes = plt.subplots(len(rounds), 3, figsize=(12, 2 * len(rounds)), sharex=True, sharey=True)
+    fig.suptitle(f"EEG Segment (Fixed Y): {student_id}", fontsize=14)
+
+    
+    for j, round_id in enumerate(rounds):
+        for i, task_id in enumerate(tasks):
+            ax = axes[j, i]
+            pattern = os.path.join(dataset_path, student_id, f"*_{task_id}_{round_id}.txt")
+            files = glob.glob(pattern)
+            
+            if files:
+                try:
+                    raw_data = np.loadtxt(files[0])
+                    # =============================================
+                    # ==== adding filters =========================
+                    # raw_data = bandpass_filter(raw_data, fs)
+                    # raw_data = notch_filter(raw_data, fs)
+                    # raw_data = bandstop_filter(raw_data, fs)
+                    # =============================================
+                    actual_end = min(end_idx, len(raw_data))
+                    data_slice = raw_data[start_idx:actual_end]
+                    time = np.arange(start_idx, actual_end) / fs
+                    
+                    ax.plot(time, data_slice, lw=0.6, color='C'+str(i))
+                    ax.set_title(f"{task_names[task_id]} R{round_id}", fontsize=9)
+                    ax.grid(True, alpha=0.3)
+                    
+                    
+                    ax.set_ylim(-1000, 1000) 
+                    
+                except Exception as e:
+                    ax.text(0.5, 0.5, "Load Error", ha='center', fontsize=8)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
+
+
 
 if __name__ == "__main__":
-    main()
+
+    student_ids = [f"S{str(i).zfill(2)}" for i in range(1, 19)]
+    student_ids.append("b12901035")
+    student_ids.append("b12901028")
+    dataset_path = 'bci_dataset_114-2_any'
+    target_task = 3    # 1: Relax, 2: Focus, 3: Blink
+    target_round = 1  
+    
+    start_sec = 10
+    end_sec = 20
+
+    ###############################################################
+    # 1. All students, single task, single round
+    ###############################################################
+    plot_students_separate_subplots(dataset_path, student_ids, target_task, target_round, start_sec, end_sec)
+    
+    ###############################################################
+    # 2. Single student, single task, all rounds
+    ###############################################################
+    # plot_single_subject_all_rounds(dataset_path, "S04", target_task, rounds=range(1, 19), start_sec=start_sec, end_sec=end_sec)
+
+    ###############################################################
+    # 3. Single student, all tasks, all rounds 
+    ###############################################################
+    #plot_task_fixed_y(dataset_path, "S01", rounds=[11, 12, 13 , 14, 15 ,16], start_sec=0, end_sec=20)
