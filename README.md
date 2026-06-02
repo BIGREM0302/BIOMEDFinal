@@ -360,7 +360,7 @@ rm -rf runs/old_*/
 
 ## 👥 Team Notes
 
-- **Primary Dataset**: bci_dataset_114-2_any (114 subjects × 2 sessions × ~30 trials)
+- **Primary Dataset**: bci_dataset_114-2_any (18 subjects × 3 tasks × 10 rounds)
 - **Excluded Subjects**: S06, S09, S14 (poor data quality)
 - **Hardware**: Arduino-based with LED/Motor feedback
 - **Production Model**: bci_model_final.pth (pre-trained, ready for deployment)
