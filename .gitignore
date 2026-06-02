@@ -7,3 +7,4 @@ runs/
 !.vscode/settings.json
 !.vscode/extensions.json
 bci_dataset_114-2/
+__pycache__/
