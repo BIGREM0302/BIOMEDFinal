@@ -353,9 +353,9 @@ rm -rf runs/old_*/
 
 - **EEG Signal Processing**: Scipy signal module
 - **Deep Learning**: PyTorch with Squeeze-Excitation networks
-- **Game AI**: MCTS + Minimax algorithms
+- **Game AI**: MCTS + Minimax algorithms, based on [CanProjects/Connect-4-AI](https://github.com/CanProjects/Connect-4-AI)
 - **Baseline**: XGBoost gradient boosting
-
+  
 ---
 
 ## 👥 Team Notes
