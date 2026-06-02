@@ -198,9 +198,11 @@ def load_all_data():
     subject_folders = sorted([f.path for f in os.scandir(Config.DATASET_PATH) if f.is_dir()])
     dataset_dict = {}
     
+    exclude_subjects = ["S06", "S14", "S09", "S05"]  
+
     for folder in subject_folders:
         sub_id = os.path.basename(folder)
-        if sub_id not in ["S04", "S06", "S07", "S10", "S16"]:
+        if sub_id not in exclude_subjects:
             X_raw, X_feat, y = process_subject_files(folder)
             if X_raw is not None:
                 dataset_dict[sub_id] = {'X_raw': X_raw, 'X_feat': X_feat, 'y': y}
