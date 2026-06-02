@@ -4,6 +4,10 @@
 
 ---
 
+🎥 **Hardware & Software Live Demo Video:** [https://youtu.be/mero_8mWpXw](https://youtu.be/mero_8mWpXw)
+
+---
+
 ## 📋 Overview
 
 This is a comprehensive BCI project combining:
