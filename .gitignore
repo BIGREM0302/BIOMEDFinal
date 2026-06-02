@@ -2,6 +2,8 @@
 *.json
 *.zip
 runs/
+runs_2/
+runs_3/
 .venv/
 .vscode/*
 !.vscode/settings.json
